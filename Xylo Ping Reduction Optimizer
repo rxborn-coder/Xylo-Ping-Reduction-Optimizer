@@ -1,115 +1,114 @@
 @echo off
-title Xylo Ping Reduction Utility
-:: --------------  self-elevate to admin  -------------------------------------
-setlocal EnableExtensions
->nul 2>&1 "%SystemRoot%\system32\fltmc.exe" || (
-    echo This utility must run as Administrator.
-    echo Press any key to restart elevated . . .
-    pause >nul
-    mshta vbscript:Execute("CreateObject(""Shell.Application"").ShellExecute ""%~f0"","""",""RunAs"":close")
-    exit /b
+::  Xylo Ping Reduction Utility  –  FREE VERSION  –  CMD-ONLY
+::  Auto-creates a System Restore Point on first run this session
+::  ==============================================================
+title Xylo Ping Reduction Utility (Free Version)
+color 0A
+mode con: cols=70 lines=30
+
+:: -----  AUTO RESTORE POINT (once per session)  -----
+set "RP_DONE=%temp%\XyloRP_%username%.tmp"
+if not exist "%RP_DONE%" (
+    echo Creating System Restore Point …
+    echo.
+    wmic.exe /Namespace:\\root\default Path SystemRestore Call CreateRestorePoint "Xylo Ping Tweaks", 100, 7 >nul 2>&1
+    if !errorlevel! equ 0 (
+        echo    [OK] Restore Point created.
+        type nul > "%RP_DONE%"
+    ) else (
+        echo    [!] Could not create Restore Point (UAC cancelled or WMIC failed).
+        echo        Continuing anyway …
+    )
+    timeout /t 3 >nul
 )
-:: --------------  tiny choice menu  ------------------------------------------
-:menu
+
+:MENU
 cls
 echo.
-echo    ╔══════════════════════════════════════════════════════════════╗
-echo    ║  Xylo Ping Reduction Utility  –  Pick what to apply          ║
-echo    ╠══════════════════════════════════════════════════════════════╣
-echo    ║  1  Disable Nagle ^(lower micro-lag^)                          ║
-echo    ║  2  Network memory tweaks ^(ports, buffers^)                  ║
-echo    ║  3  Kill NIC power-saving ^(stops micro-spikes^)              ║
-echo    ║  4  Turn off Receive-Side-Scaling auto-tuning                ║
-echo    ║  5  Disable Limiting ^(QoS, GP throttling, MMCSS^)            ║
-echo    ║  6  Apply ALL tweaks above                                   ║
-echo    ║  7  RESTORE original settings                                ║
-echo    ║  8  Exit                                                     ║
-echo    ╚══════════════════════════════════════════════════════════════╝
+echo    ================================================
+echo       Xylo Ping Reduction Utility  (Free Version)
+echo    ================================================
 echo.
-choice /c 12345678 /n /m "Choose 1-8: "
-set choice=%errorlevel%
-if %choice%==8 exit /b
-set backup=%ProgramData%\XyloPingBackup
-if not exist "%backup%" md "%backup%"
-goto opt%choice%
-
-:: --------------  1  –  Nagle off  -------------------------------------------
-:opt1
-echo Backing up current interface settings . . .
-for /f "skip=2 tokens=4" %%i in ('reg query "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces" /s /v TcpAckFrequency 2^>nul') do (
-    reg export "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\%%i" "%backup%\nagle-%%i.reg" >nul 2>&1
-)
-for /f "skip=2 tokens=4" %%i in ('reg query "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces" /s /v TCPNoDelay 2^>nul') do (
-    reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\%%i" /v TcpAckFrequency /t REG_DWORD /d 1 /f >nul
-    reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\%%i" /v TCPNoDelay     /t REG_DWORD /d 1 /f >nul
-    reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\%%i" /v TcpDelAckTicks /t REG_DWORD /d 0 /f >nul
-)
-echo Nagle disabled. && goto finished
-
-:: --------------  2  –  Network memory  --------------------------------------
-:opt2
-echo Backing up general TCP params . . .
-reg export "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" "%backup%\tcp-params.reg" >nul 2>&1
-reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" /v MaxUserPort      /t REG_DWORD /d 65534 /f >nul
-reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" /v TcpTimedWaitDelay /t REG_DWORD /d 30    /f >nul
-reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" /v EnableRSS        /t REG_DWORD /d 1     /f >nul
-reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" /v EnableRSC        /t REG_DWORD /d 0     /f >nul
-echo Network memory tweaks applied. && goto finished
-
-:: --------------  3  –  NIC power-saving off  --------------------------------
-:opt3
-echo Disabling power-saving on active NICs . . .
-for /f "usebackq tokens=1*" %%i in (`wmic path win32_networkadapter where "NetEnabled='True'" get PNPDeviceID /value ^| find "="`) do (
-    set dev=%%j
-    reg add "HKLM\SYSTEM\CurrentControlSet\Enum\!dev!\Device Parameters" /v SelectiveSuspendEnabled /t REG_DWORD /d 0 /f >nul 2>&1
-    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes\Sub_none\!dev!" /v Attributes /t REG_DWORD /d 0 /f >nul 2>&1
-)
-echo NIC power-saving disabled. && goto finished
-
-:: --------------  4  –  RSS / auto-tuning  -----------------------------------
-:opt4
-echo Tuning TCP auto-tuning . . .
-netsh int tcp set global autotuninglevel=disabled >nul
-netsh int tcp set global chimney=disabled       >nul
-netsh int tcp set global netdma=disabled        >nul
-netsh int tcp set global dca=disabled           >nul
-echo Receive-side tuning disabled. && goto finished
-
-:: --------------  5  –  Disable Limiting  ------------------------------------
-:opt5
-echo Disabling QoS / Group-Policy / MMCSS bandwidth limits . . .
-reg export "HKLM\SOFTWARE\Policies\Microsoft\Windows\Psched" "%backup%\psched.reg" >nul 2>&1
-reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Psched" /v NonBestEffortLimit /t REG_DWORD /d 0 /f >nul
-reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Psched" /v TimerResolution    /t REG_DWORD /d 0 /f >nul
-:: Kill multimedia class scheduler limit
-sc stop MMCSS >nul 2>&1
-sc config MMCSS start= disabled >nul 2>&1
-:: Disable Windows Update delivery optimisation while gaming
-reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" /v DODownloadMode /t REG_DWORD /d 0 /f >nul
-echo All artificial limiting disabled. && goto finished
-
-:: --------------  6  –  Apply all  -------------------------------------------
-:opt6
-call :opt1
-call :opt2
-call :opt3
-call :opt4
-call :opt5
-goto finished
-
-:: --------------  7  –  Restore  ---------------------------------------------
-:opt7
-echo Restoring original settings . . .
-for %%f in ("%backup%\*.reg") do reg import "%%f" >nul 2>&1
-sc config MMCSS start= demand >nul 2>&1
-echo Restore complete. && goto finished
-
-:: --------------  finished message  ------------------------------------------
-:finished
+echo    [1]  Prioritise Game Traffic ^(QoS^)
+echo    [2]  Disable Windows Bandwidth Limit
+echo    [3]  Optimise Packet Handling
+echo    [4]  Block Xbox Live / Game-Save Traffic
+echo    [5]  Disable Nagle's Algorithm  ^(lower delay^)
+echo    [6]  Apply ALL Tweaks
+echo    [7]  Exit
 echo.
-echo    ╔══════════════════════════════════════════════════════════════╗
-echo    ║  Tweak(s) finished successfully!                             ║
-echo    ║  Please REBOOT your PC for changes to take effect.           ║
-echo    ╚══════════════════════════════════════════════════════════════╝
+set /P CHOICE= Choose 1-7 : || goto MENU
+if "%CHOICE%"=="1" goto QOS
+if "%CHOICE%"=="2" goto BANDWIDTH
+if "%CHOICE%"=="3" goto PACKET
+if "%CHOICE%"=="4" goto BACKGROUND
+if "%CHOICE%"=="5" goto NAGLE
+if "%CHOICE%"=="6" goto DOALL
+if "%CHOICE%"=="7" del "%RP_DONE%" 2>nul & exit /b
+goto MENU
+
+:QOS
+echo.
+echo --- Applying QoS Game Priority ---
+netsh int tcp set global autotuninglevel=normal
+netsh int tcp set global chimney=enabled
+netsh int tcp set global rss=enabled
+netsh int tcp set global netdma=enabled
+echo    [OK] QoS tweak finished.
 pause
-goto menu
+goto MENU
+
+:BANDWIDTH
+echo.
+echo --- Disabling Windows Bandwidth Limit ---
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Psched" /v NonBestEffortLimit /t REG_DWORD /d 0 /f >nul 2>&1
+echo    [OK] Bandwidth limit removed.
+pause
+goto MENU
+
+:PACKET
+echo.
+echo --- Optimising Packet Handling ---
+netsh int ip set global taskoffload=enabled
+netsh int tcp set global ecncapability=disabled
+netsh int tcp set global timestamps=disabled
+echo    [OK] Packet handling optimised.
+pause
+goto MENU
+
+:BACKGROUND
+echo.
+echo --- Minimising Background Network Usage ---
+netsh advfirewall firewall set allprofiles state on >nul
+netsh advfirewall firewall add rule name="Block Xbox Live" dir=out action=block service=XblAuthManager >nul 2>&1
+netsh advfirewall firewall add rule name="Block Xbox Game-Save" dir=out action=block service=XblGameSave >nul 2>&1
+echo    [OK] Xbox background traffic blocked.
+pause
+goto MENU
+
+:NAGLE
+echo.
+echo --- Disabling Nagle's Algorithm ---
+for /f "tokens=3*" %%a in ('reg query "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces" /s /f "DhcpIPAddress" 2^>nul ^| findstr "DhcpIPAddress"') do (
+   reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\%%a" /v TcpAckFrequency    /t REG_DWORD /d 1 /f >nul 2>&1
+   reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\%%a" /v TcpDelAckTicks    /t REG_DWORD /d 0 /f >nul 2>&1
+   reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\%%a" /v TcpNoDelay        /t REG_DWORD /d 1 /f >nul 2>&1
+)
+echo    [OK] Nagle disabled on all active adapters.
+pause
+goto MENU
+
+:DOALL
+echo.
+echo --- Applying ALL Tweaks ---
+call :QOS >nul 2>&1
+call :BANDWIDTH >nul 2>&1
+call :PACKET >nul 2>&1
+call :BACKGROUND >nul 2>&1
+call :NAGLE >nul 2>&1
+echo.
+echo  ================================================
+echo        ALL TWEAKS FINISHED SUCCESSFULLY!
+echo  ================================================
+pause
+goto MENU
